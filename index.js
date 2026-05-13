@@ -336,7 +336,7 @@ bot.onText(/\/ai (.+)/, async (msg, match) => {
         );
 
         const response = await axios.post(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${AIzaSyBNSDT6EjFTERZJTPP_bqpQt8qO-9o5VY8}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=AIzaSyBNSDT6EjFTERZJTPP_bqpQt8qO-9o5VY8`,
     {
         contents: [
             {
