@@ -1,430 +1,441 @@
-const TelegramBot = require("node-telegram-bot-api");
-const axios = require("axios");
-const fs = require("fs");
+#!/usr/bin/env python3
+# =====================================================
+# TELEGRAM AI CHATBOT - Powered by Claude API
+# Install: pip install python-telegram-bot anthropic
+# =====================================================
 
-// ================= CONFIG =================
+import logging
+import os
+from anthropic import Anthropic
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
-const token = "8933266221:AAFGNmY064fRpi2c5Auw2EUgMd1DW6PnXyY";
-const GEMINI_API_KEY = "AIzaSyBNSDT6EjFTERZJTPP_bqpQt8qO-9o5VY8";
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-const OWNER_ID = 6191749317;
+# =====================================================
+# CONFIG - Apne tokens yahan daalo
+# =====================================================
+BOT_TOKEN = "8933266221:AAEnowlBIIGPv3J2oZZnHB9IS-S22DY8S0s"       # @BotFather se lena
+ANTHROPIC_API_KEY = "AIzaSyBNSDT6EjFTERZJTPP_bqpQt8qO-9o5VY8" # console.anthropic.com se lena
 
-// ================= BOT =================
+# Bot ka naam aur personality
+BOT_NAME = "AI Assistant"
+SYSTEM_PROMPT = """Tu ek helpful AI assistant hai jo Hinglish mein baat karta hai.
+Tujhe short, clear aur friendly replies dene hain.
+User ke questions ka accha jawab de. Emojis use kar lekin zyada nahi."""
 
-const bot = new TelegramBot(token, {
-    polling: true
-});
+# =====================================================
+# USER CHAT HISTORY (memory for conversation)
+# =====================================================
+user_histories = {}
 
-console.log("🚀AYAN CHEATS PREMIUM AI BOT RUNNING...");
+def get_history(user_id):
+    if user_id not in user_histories:
+        user_histories[user_id] = []
+    return user_histories[user_id]
 
-// ================= DATABASE =================
+def clear_history(user_id):
+    user_histories[user_id] = []
 
-const dbFile = "users.json";
+# =====================================================
+# KEYBOARDS
+# =====================================================
 
-if (!fs.existsSync(dbFile)) {
-    fs.writeFileSync(
-        dbFile,
-        JSON.stringify({
-            users: [],
-            premium: [],
-            admins: []
-        }, null, 2)
-    );
-}
+def main_keyboard():
+    keyboard = [
+        [KeyboardButton("💬 AI Chat"), KeyboardButton("🧠 Smart Q&A")],
+        [KeyboardButton("📝 Text Tools"), KeyboardButton("🌐 Translate")],
+        [KeyboardButton("💡 Ideas Generator"), KeyboardButton("📊 Summarize")],
+        [KeyboardButton("🗑️ Clear Chat"), KeyboardButton("❓ Help")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-function loadDB() {
-    return JSON.parse(fs.readFileSync(dbFile));
-}
+def text_tools_keyboard():
+    keyboard = [
+        [KeyboardButton("✍️ Fix Grammar"), KeyboardButton("📋 Rewrite")],
+        [KeyboardButton("📏 Make Shorter"), KeyboardButton("📖 Make Longer")],
+        [KeyboardButton("🎯 Key Points"), KeyboardButton("« Back")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-function saveDB(data) {
-    fs.writeFileSync(dbFile, JSON.stringify(data, null, 2));
-}
+def translate_keyboard():
+    keyboard = [
+        [KeyboardButton("🇮🇳 Hindi"), KeyboardButton("🇬🇧 English")],
+        [KeyboardButton("🇸🇦 Arabic"), KeyboardButton("🇫🇷 French")],
+        [KeyboardButton("🇯🇵 Japanese"), KeyboardButton("🇩🇪 German")],
+        [KeyboardButton("« Back")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-// ================= FUNCTIONS =================
+def cancel_keyboard():
+    keyboard = [[KeyboardButton("❌ Cancel")]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-function isOwner(id) {
-    return id === OWNER_ID;
-}
+# =====================================================
+# USER STATE (konsa mode active hai)
+# =====================================================
+user_state = {}
 
-function isAdmin(id) {
-    const db = loadDB();
-    return db.admins.includes(id) || isOwner(id);
-}
+MODE_NONE        = "none"
+MODE_CHAT        = "chat"
+MODE_QNA         = "qna"
+MODE_GRAMMAR     = "grammar"
+MODE_REWRITE     = "rewrite"
+MODE_SHORTER     = "shorter"
+MODE_LONGER      = "longer"
+MODE_KEYPOINTS   = "keypoints"
+MODE_TRANSLATE   = "translate"
+MODE_SUMMARIZE   = "summarize"
+MODE_IDEAS       = "ideas"
+MODE_AWAIT_LANG  = "await_lang"
 
-function isPremium(id) {
-    const db = loadDB();
-    return db.premium.includes(id);
-}
+def set_mode(user_id, mode):
+    user_state[user_id] = mode
 
-function addUser(id) {
-    const db = loadDB();
-    if (!db.users.includes(id)) {
-        db.users.push(id);
-        saveDB(db);
-    }
-}
+def get_mode(user_id):
+    return user_state.get(user_id, MODE_NONE)
 
-// ================= LEVEL SYSTEM =================
+# =====================================================
+# CLAUDE API CALL
+# =====================================================
+client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-const levels = {};
+async def ask_claude(user_id, user_message, system_override=None):
+    history = get_history(user_id)
+    history.append({"role": "user", "content": user_message})
 
-// ================= SPAM SYSTEM =================
+    system = system_override if system_override else SYSTEM_PROMPT
 
-const spam = {};
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1024,
+        system=system,
+        messages=history
+    )
 
-// ================= START =================
+    reply = response.content[0].text
+    history.append({"role": "assistant", "content": reply})
 
-bot.onText(/\/start/, async (msg) => {
-    const id = msg.from.id;
-    addUser(id);
-    bot.sendMessage(msg.chat.id,
-`🤖 PREMIUM AI BOT
+    # History 20 messages tak rakho
+    if len(history) > 20:
+        user_histories[user_id] = history[-20:]
 
-👑 Owner System
-🛡 Admin System
-💎 Premium System
-🧠 AI Chat
-📢 Broadcast
-📊 Stats
-🎛 Panel
-🎮 Level System
-🚫 Anti Spam
-🎁 Daily Reward
-🔒 Authentication
+    return reply
 
-Commands:
-/help`
-    );
-});
+# =====================================================
+# COMMAND HANDLERS
+# =====================================================
 
-// ================= HELP =================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    set_mode(user_id, MODE_CHAT)
+    clear_history(user_id)
 
-bot.onText(/\/help/, async (msg) => {
-    bot.sendMessage(msg.chat.id,
-`📚 COMMANDS
+    msg = (
+        f"👋 *Namaste {user.first_name}!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Main hoon *{BOT_NAME}* 🤖\n\n"
+        f"Aap mujhse kuch bhi pooch sakte hain!\n"
+        f"Ya niche buttons se option choose karein.\n\n"
+        f"💡 Seedha type karke bhi baat kar sakte hain!"
+    )
 
-🧠 AI
-/ai question
+    await update.message.reply_text(
+        msg,
+        parse_mode="Markdown",
+        reply_markup=main_keyboard()
+    )
 
-👤 USER
-/id
-/profile
-/premium
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "❓ *HELP - Features*\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💬 *AI Chat* - Normal baat karo AI se\n"
+        "🧠 *Smart Q&A* - Deep questions ke liye\n"
+        "📝 *Text Tools* - Grammar, rewrite, etc.\n"
+        "🌐 *Translate* - Kisi bhi language mein\n"
+        "💡 *Ideas* - Creative ideas generator\n"
+        "📊 *Summarize* - Bada text chhota karo\n"
+        "🗑️ *Clear Chat* - History saaf karo\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Koi sawaal? Seedha type karo! 😊"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=main_keyboard())
 
-👑 ADMIN
-/stats
-/broadcast text
-/addpremium id
-/removepremium id
-/addadmin id
+# =====================================================
+# MAIN MESSAGE HANDLER
+# =====================================================
 
-🎛 EXTRA
-/panel
-/ping
-/uptime
-/quote
-/daily
-/system
-/weather city`
-    );
-});
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    mode = get_mode(user_id)
 
-// ================= USER ID =================
+    # ── MAIN MENU BUTTONS ──────────────────────────
 
-bot.onText(/\/id/, async (msg) => {
-    bot.sendMessage(msg.chat.id, `🆔 ID: ${msg.from.id}`);
-});
+    if text == "💬 AI Chat":
+        set_mode(user_id, MODE_CHAT)
+        await update.message.reply_text(
+            "💬 *AI Chat Mode ON!*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Kuch bhi poochein, main jawab dunga! 🤖",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
+        )
+        return
 
-// ================= PROFILE =================
+    elif text == "🧠 Smart Q&A":
+        set_mode(user_id, MODE_QNA)
+        await update.message.reply_text(
+            "🧠 *Smart Q&A Mode!*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Apna sawaal poochein - main detail mein explain karunga!",
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard()
+        )
+        return
 
-bot.onText(/\/profile/, async (msg) => {
-    const id = msg.from.id;
-    if (!levels[id]) {
-        levels[id] = { xp: 0, level: 1 };
-    }
-    bot.sendMessage(msg.chat.id,
-`👤 PROFILE
+    elif text == "📝 Text Tools":
+        set_mode(user_id, MODE_NONE)
+        await update.message.reply_text(
+            "📝 *Text Tools*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Kaunsa tool use karna hai?",
+            parse_mode="Markdown",
+            reply_markup=text_tools_keyboard()
+        )
+        return
 
-🆔 ID: ${id}
-⭐ Level: ${levels[id].level}
-⚡ XP: ${levels[id].xp}
-💎 Premium: ${isPremium(id)}`
-    );
-});
+    elif text == "🌐 Translate":
+        set_mode(user_id, MODE_AWAIT_LANG)
+        await update.message.reply_text(
+            "🌐 *Translate*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Pehle language choose karo:",
+            parse_mode="Markdown",
+            reply_markup=translate_keyboard()
+        )
+        return
 
-// ================= PREMIUM =================
+    elif text == "💡 Ideas Generator":
+        set_mode(user_id, MODE_IDEAS)
+        await update.message.reply_text(
+            "💡 *Ideas Generator!*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Kaunse topic pe ideas chahiye? Batao!",
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard()
+        )
+        return
 
-bot.onText(/\/premium/, async (msg) => {
-    if (isPremium(msg.from.id)) {
-        bot.sendMessage(msg.chat.id, "💎 Premium Active");
-    } else {
-        bot.sendMessage(msg.chat.id, "❌ No Premium");
-    }
-});
+    elif text == "📊 Summarize":
+        set_mode(user_id, MODE_SUMMARIZE)
+        await update.message.reply_text(
+            "📊 *Summarize Mode!*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Jo text summarize karna hai woh bhejo:",
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard()
+        )
+        return
 
-// ================= STATS =================
+    elif text == "🗑️ Clear Chat":
+        clear_history(user_id)
+        set_mode(user_id, MODE_CHAT)
+        await update.message.reply_text(
+            "🗑️ *Chat history clear ho gayi!*\n"
+            "Fresh start karo! 😊",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
+        )
+        return
 
-bot.onText(/\/stats/, async (msg) => {
-    if (!isAdmin(msg.from.id)) return;
-    const db = loadDB();
-    bot.sendMessage(msg.chat.id,
-`📊 BOT STATS
+    elif text == "❓ Help":
+        await help_command(update, context)
+        return
 
-👤 Users: ${db.users.length}
-💎 Premium: ${db.premium.length}
-🛡 Admins: ${db.admins.length}`
-    );
-});
+    # ── TEXT TOOLS BUTTONS ─────────────────────────
 
-// ================= ADD PREMIUM =================
+    elif text == "✍️ Fix Grammar":
+        set_mode(user_id, MODE_GRAMMAR)
+        await update.message.reply_text(
+            "✍️ *Grammar Fix Mode*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Apna text bhejo, main grammar theek karunga:",
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard()
+        )
+        return
 
-bot.onText(/\/addpremium (.+)/, async (msg, match) => {
-    if (!isAdmin(msg.from.id)) return;
-    const userId = Number(match[1]);
-    const db = loadDB();
-    if (!db.premium.includes(userId)) {
-        db.premium.push(userId);
-        saveDB(db);
-        bot.sendMessage(msg.chat.id, "✅ Premium Added");
-    }
-});
+    elif text == "📋 Rewrite":
+        set_mode(user_id, MODE_REWRITE)
+        await update.message.reply_text(
+            "📋 *Rewrite Mode*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Text bhejo, main better tarike se likhta hoon:",
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard()
+        )
+        return
 
-// ================= REMOVE PREMIUM =================
+    elif text == "📏 Make Shorter":
+        set_mode(user_id, MODE_SHORTER)
+        await update.message.reply_text(
+            "📏 *Make Shorter Mode*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Text bhejo, main use concise bana dunga:",
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard()
+        )
+        return
 
-bot.onText(/\/removepremium (.+)/, async (msg, match) => {
-    if (!isAdmin(msg.from.id)) return;
-    const userId = Number(match[1]);
-    const db = loadDB();
-    db.premium = db.premium.filter(id => id !== userId);
-    saveDB(db);
-    bot.sendMessage(msg.chat.id, "❌ Premium Removed");
-});
+    elif text == "📖 Make Longer":
+        set_mode(user_id, MODE_LONGER)
+        await update.message.reply_text(
+            "📖 *Make Longer Mode*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Text bhejo, main use detailed bana dunga:",
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard()
+        )
+        return
 
-// ================= ADD ADMIN =================
+    elif text == "🎯 Key Points":
+        set_mode(user_id, MODE_KEYPOINTS)
+        await update.message.reply_text(
+            "🎯 *Key Points Mode*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Article ya paragraph bhejo, main key points nikalta hoon:",
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard()
+        )
+        return
 
-bot.onText(/\/addadmin (.+)/, async (msg, match) => {
-    if (!isOwner(msg.from.id)) return;
-    const userId = Number(match[1]);
-    const db = loadDB();
-    if (!db.admins.includes(userId)) {
-        db.admins.push(userId);
-        saveDB(db);
-        bot.sendMessage(msg.chat.id, "🛡 Admin Added");
-    }
-});
+    elif text == "« Back":
+        set_mode(user_id, MODE_CHAT)
+        await update.message.reply_text(
+            "🏠 Main menu pe wapas aa gaye!",
+            reply_markup=main_keyboard()
+        )
+        return
 
-// ================= BROADCAST =================
+    elif text == "❌ Cancel":
+        set_mode(user_id, MODE_CHAT)
+        await update.message.reply_text(
+            "❌ *Cancelled!*\n"
+            "Main menu pe wapas.",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
+        )
+        return
 
-bot.onText(/\/broadcast (.+)/, async (msg, match) => {
-    if (!isAdmin(msg.from.id)) return;
-    const text = match[1];
-    const db = loadDB();
-    for (const user of db.users) {
-        try {
-            await bot.sendMessage(user, `📢 BROADCAST\n\n${text}`);
-        } catch (e) {}
-    }
-    bot.sendMessage(msg.chat.id, "✅ Broadcast Sent");
-});
+    # ── TRANSLATE LANGUAGE SELECTION ───────────────
 
-// ================= AI CHAT =================
-
-bot.onText(/\/ai (.+)/, async (msg, match) => {
-    const userText = match[1];
-    try {
-        bot.sendChatAction(msg.chat.id, "typing");
-        const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$AIzaSyBNSDT6EjFTERZJTPP_bqpQt8qO-9o5VY8`,
-            {
-                contents: [
-                    {
-                        parts: [
-                            {
-                                text: userText
-                            }
-                        ]
-                    }
-                ]
-            }
-        );
-        const reply = response.data.candidates[0].content.parts[0].text;
-        bot.sendMessage(msg.chat.id, reply);
-    } catch (err) {
-        console.log(err.response?.data || err.message);
-        bot.sendMessage(msg.chat.id, "❌ AI Error");
-    }
-});
-
-// ================= PANEL =================
-
-bot.onText(/\/panel/, async (msg) => {
-    bot.sendMessage(msg.chat.id, "🎛 Control Panel", {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: "📊 Stats", callback_data: "stats" },
-                    { text: "💎 Premium", callback_data: "premium" }
-                ],
-                [
-                    { text: "👑 Owner", callback_data: "owner" }
-                ]
-            ]
+    elif mode == MODE_AWAIT_LANG and text in [
+        "🇮🇳 Hindi", "🇬🇧 English", "🇸🇦 Arabic",
+        "🇫🇷 French", "🇯🇵 Japanese", "🇩🇪 German"
+    ]:
+        lang_map = {
+            "🇮🇳 Hindi": "Hindi",
+            "🇬🇧 English": "English",
+            "🇸🇦 Arabic": "Arabic",
+            "🇫🇷 French": "French",
+            "🇯🇵 Japanese": "Japanese",
+            "🇩🇪 German": "German",
         }
-    });
-});
+        lang = lang_map[text]
+        context.user_data["translate_lang"] = lang
+        set_mode(user_id, MODE_TRANSLATE)
+        await update.message.reply_text(
+            f"🌐 *{text} selected!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Ab jo text bhejoge woh {lang} mein translate hoga:",
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard()
+        )
+        return
 
-// ================= CALLBACK =================
+    # ── AI PROCESSING ──────────────────────────────
 
-bot.on("callback_query", async (query) => {
-    const data = query.data;
-    if (data === "stats") {
-        const db = loadDB();
-        bot.sendMessage(query.message.chat.id, `👤 Users: ${db.users.length}`);
-    }
-    if (data === "premium") {
-        bot.sendMessage(query.message.chat.id, "💎 Premium System Active");
-    }
-    if (data === "owner") {
-        bot.sendMessage(query.message.chat.id, "👑 Owner Online");
-    }
-});
+    # Show typing indicator
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action="typing"
+    )
 
-// ================= DAILY =================
+    try:
+        if mode == MODE_GRAMMAR:
+            prompt = f"Niche diye gaye text ki grammar fix karo. Sirf corrected text do, explanation nahi:\n\n{text}"
+            reply = await ask_claude(user_id, prompt, "Tu ek expert grammar editor hai. Sirf fixed text do.")
 
-const rewardCooldown = {};
+        elif mode == MODE_REWRITE:
+            prompt = f"Is text ko better aur professional style mein rewrite karo:\n\n{text}"
+            reply = await ask_claude(user_id, prompt, "Tu ek expert writer hai. Text ko better banao.")
 
-bot.onText(/\/daily/, async (msg) => {
-    const id = msg.from.id;
-    const now = Date.now();
-    if (rewardCooldown[id] && now - rewardCooldown[id] < 86400000) {
-        return bot.sendMessage(msg.chat.id, "⏳ Come Tomorrow");
-    }
-    rewardCooldown[id] = now;
-    bot.sendMessage(msg.chat.id, "🎁 Daily Reward Claimed");
-});
+        elif mode == MODE_SHORTER:
+            prompt = f"Is text ko concise aur short banao, main points rakho:\n\n{text}"
+            reply = await ask_claude(user_id, prompt, "Tu ek expert editor hai. Text ko short karo without losing meaning.")
 
-// ================= QUOTES =================
+        elif mode == MODE_LONGER:
+            prompt = f"Is text ko elaborate aur detailed banao:\n\n{text}"
+            reply = await ask_claude(user_id, prompt, "Tu ek expert writer hai. Text ko detailed banao.")
 
-const quotes = [
-    "🔥 Never Give Up",
-    "💪 Work Hard",
-    "🚀 Success Loading",
-    "😎 Stay Strong"
-];
+        elif mode == MODE_KEYPOINTS:
+            prompt = f"Is text ke key points bullet points mein nikalo:\n\n{text}"
+            reply = await ask_claude(user_id, prompt, "Tu ek expert analyst hai. Key points clearly list karo.")
 
-bot.onText(/\/quote/, async (msg) => {
-    const random = quotes[Math.floor(Math.random() * quotes.length)];
-    bot.sendMessage(msg.chat.id, random);
-});
+        elif mode == MODE_TRANSLATE:
+            lang = context.user_data.get("translate_lang", "English")
+            prompt = f"Is text ko {lang} mein translate karo. Sirf translation do:\n\n{text}"
+            reply = await ask_claude(user_id, prompt, f"Tu ek expert translator hai. Sirf {lang} translation do.")
 
-// ================= WEATHER =================
+        elif mode == MODE_SUMMARIZE:
+            prompt = f"Is text ka short summary do:\n\n{text}"
+            reply = await ask_claude(user_id, prompt, "Tu ek expert summarizer hai. Concise summary do.")
 
-bot.onText(/\/weather (.+)/, async (msg, match) => {
-    const city = match[1];
-    bot.sendMessage(msg.chat.id,
-`🌤 WEATHER
+        elif mode == MODE_IDEAS:
+            prompt = f"'{text}' topic pe 5 creative aur unique ideas do with brief explanation."
+            reply = await ask_claude(user_id, prompt, "Tu ek creative idea generator hai. Numbered list mein ideas do.")
 
-📍 City: ${city}
-🌡 Temp: 28°C
-💨 Wind: 10km/h`
-    );
-});
+        elif mode == MODE_QNA:
+            prompt = f"Is sawaal ka detailed aur helpful jawab do:\n\n{text}"
+            reply = await ask_claude(user_id, prompt, "Tu ek knowledgeable expert hai. Detailed explanation do.")
 
-// ================= SYSTEM =================
+        else:
+            # Default chat mode
+            reply = await ask_claude(user_id, text)
 
-bot.onText(/\/system/, async (msg) => {
-    bot.sendMessage(msg.chat.id,
-`🖥 SYSTEM
+        await update.message.reply_text(reply)
 
-⚡ Status: Online
-🧠 AI: Active
-📦 Database: Connected`
-    );
-});
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        await update.message.reply_text(
+            "❌ Kuch error aa gayi!\n"
+            "Thodi der baad try karo ya /start karo.",
+            reply_markup=main_keyboard()
+        )
 
-// ================= PING =================
+# =====================================================
+# MAIN
+# =====================================================
 
-bot.onText(/\/ping/, async (msg) => {
-    bot.sendMessage(msg.chat.id, "🏓 Pong!");
-});
+def main():
+    print("🤖 AI Chatbot Starting...")
+    print("━━━━━━━━━━━━━━━━━━━━━")
 
-// ================= UPTIME =================
+    app = Application.builder().token(BOT_TOKEN).build()
 
-const startTime = Date.now();
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-bot.onText(/\/uptime/, async (msg) => {
-    const uptime = Math.floor((Date.now() - startTime) / 1000);
-    bot.sendMessage(msg.chat.id, `⏰ Uptime: ${uptime}s`);
-});
+    print("✅ Bot is running! Press Ctrl+C to stop.")
+    app.run_polling(poll_interval=1.0)
 
-// ================= WELCOME =================
-
-bot.on("new_chat_members", async (msg) => {
-    const name = msg.new_chat_members[0].first_name;
-    bot.sendMessage(msg.chat.id, `👋 Welcome ${name}`);
-});
-
-// ================= FILTER =================
-
-const badWords = ["mc", "bc", "abuse"];
-
-bot.on("message", async (msg) => {
-    if (!msg.text) return;
-    const text = msg.text.toLowerCase();
-    if (badWords.some(word => text.includes(word))) {
-        try {
-            await bot.deleteMessage(msg.chat.id, msg.message_id);
-            bot.sendMessage(msg.chat.id, "🚫 Bad Word Not Allowed");
-        } catch (e) {}
-    }
-});
-
-// ================= AUTO REPLY =================
-
-bot.on("message", async (msg) => {
-    if (!msg.text) return;
-    const text = msg.text.toLowerCase();
-    if (text === "hi") {
-        bot.sendMessage(msg.chat.id, "👋 Hello");
-    }
-    if (text === "owner") {
-        bot.sendMessage(msg.chat.id, "👑 Owner Online");
-    }
-    if (text.includes("love")) {
-        bot.sendMessage(msg.chat.id, "❤️");
-    }
-});
-
-// ================= LEVEL =================
-
-bot.on("message", async (msg) => {
-    if (!msg.text) return;
-    const id = msg.from.id;
-    if (!levels[id]) {
-        levels[id] = { xp: 0, level: 1 };
-    }
-    levels[id].xp += 10;
-    const need = levels[id].level * 100;
-    if (levels[id].xp >= need) {
-        levels[id].level++;
-        levels[id].xp = 0;
-        bot.sendMessage(msg.chat.id, `🎉 Level Up ${levels[id].level}`);
-    }
-});
-
-// ================= ANTI SPAM =================
-
-bot.on("message", async (msg) => {
-    const id = msg.from.id;
-    if (!spam[id]) {
-        spam[id] = { count: 0, time: Date.now() };
-    }
-    spam[id].count++;
-    if (spam[id].count >= 5) {
-        if (Date.now() - spam[id].time < 5000) {
-            bot.sendMessage(msg.chat.id, "🚫 Spam Detected");
-        }
-        spam[id].count = 0;
-        spam[id].time = Date.now();
-    }
-});
+if __name__ == "__main__":
+    main()
